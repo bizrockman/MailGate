@@ -28,7 +28,9 @@ USER app
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
-    CMD python -c "import urllib.request,sys; \
-        urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2); sys.exit(0)" || exit 1
+    CMD python -c "import os,urllib.request,sys; \
+        k=os.environ.get('MAILGATE_CLIENT_API_KEY',''); \
+        req=urllib.request.Request('http://127.0.0.1:8080/health', headers={'Authorization':'Bearer '+k}); \
+        urllib.request.urlopen(req, timeout=2); sys.exit(0)" || exit 1
 
 CMD ["python", "-m", "mailgate.main"]

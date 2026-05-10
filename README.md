@@ -69,11 +69,13 @@ Authentication: either `Authorization: Bearer <key>` header or hidden `api_key` 
 
 ### `GET /health`
 
-`{"status":"ok","version":"0.2.0"}`. No auth.
+`{"status":"ok","version":"0.2.0"}`. **Requires Bearer auth** so the version isn't leaked publicly.
+
+The bundled Docker `HEALTHCHECK` reads `MAILGATE_CLIENT_API_KEY` from env to authenticate from inside the container - works out of the box for env-based single-tenant deploys.
 
 ### `GET /metrics`
 
-Prometheus exposition format. Counters:
+Prometheus exposition format. **Requires Bearer auth.** Configure your scraper with `bearer_token` (or `bearer_token_file` in Prometheus). Counters:
 
 - `mailgate_emails_sent_total{client,endpoint}`
 - `mailgate_emails_failed_total{client,endpoint,reason}`

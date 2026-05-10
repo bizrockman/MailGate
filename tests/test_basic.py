@@ -30,11 +30,22 @@ def app(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
     return create_app()
 
 
-def test_health(app):  # type: ignore[no-untyped-def]
+def test_health_requires_auth(app):  # type: ignore[no-untyped-def]
     with TestClient(app) as c:
-        r = c.get("/health")
+        # No auth -> 401
+        assert c.get("/health").status_code == 401
+        # With auth -> 200
+        r = c.get("/health", headers={"Authorization": "Bearer mg_test_key_1234567890"})
         assert r.status_code == 200
         assert r.json()["status"] == "ok"
+
+
+def test_docs_endpoints_disabled(app):  # type: ignore[no-untyped-def]
+    """Auto-generated FastAPI docs and OpenAPI schema must not be reachable."""
+    with TestClient(app) as c:
+        assert c.get("/docs").status_code == 404
+        assert c.get("/redoc").status_code == 404
+        assert c.get("/openapi.json").status_code == 404
 
 
 def test_missing_auth(app):  # type: ignore[no-untyped-def]
@@ -136,9 +147,10 @@ def test_recipient_not_allowed(app):  # type: ignore[no-untyped-def]
         assert "not allowed" in r.json()["error"]
 
 
-def test_metrics_endpoint(app):  # type: ignore[no-untyped-def]
+def test_metrics_requires_auth(app):  # type: ignore[no-untyped-def]
     with TestClient(app) as c:
-        r = c.get("/metrics")
+        assert c.get("/metrics").status_code == 401
+        r = c.get("/metrics", headers={"Authorization": "Bearer mg_test_key_1234567890"})
         assert r.status_code == 200
         assert "mailgate_emails_sent_total" in r.text
 

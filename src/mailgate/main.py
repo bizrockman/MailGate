@@ -181,6 +181,11 @@ def create_app() -> FastAPI:
         version=__version__,
         description="Lightweight self-hostable mail relay with a Resend-compatible HTTP API.",
         lifespan=lifespan,
+        # Disable auto-generated docs/schema endpoints. They leak the full API surface
+        # to anyone who can hit the deployment. Read README.md instead.
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
     )
 
     @app.middleware("http")
@@ -223,11 +228,15 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/health")
-    async def health() -> dict[str, Any]:
+    async def health(
+        client: ClientConfig = Depends(_authenticate_dep),  # noqa: ARG001
+    ) -> dict[str, Any]:
         return {"status": "ok", "version": __version__}
 
     @app.get("/metrics")
-    async def metrics_endpoint():  # type: ignore[no-untyped-def]
+    async def metrics_endpoint(  # type: ignore[no-untyped-def]
+        client: ClientConfig = Depends(_authenticate_dep),  # noqa: ARG001
+    ):
         return metrics.metrics_response()
 
     # -------------------------- /emails (JSON, Resend-compatible) --------------------------
