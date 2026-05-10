@@ -1,28 +1,31 @@
 # mailgate
 
-Lightweight self-hostable mail relay with a **Resend-compatible HTTP API** and an **HTML-form-action mode**. Bring your own SMTP, get back a single endpoint that browsers and servers can call without exposing SMTP credentials.
+Self-hostable SMTP forwarder with a **Resend-compatible HTTP API**. Bring your own SMTP, get back a single endpoint that browsers and servers can call without exposing SMTP credentials.
+
+MailGate is intentionally small. It does **one thing**: takes a fully-formed email object and forwards it through your SMTP. Body construction, form parsing, validation - all caller responsibility. Think of it as a Resend you can host.
 
 - ✅ **JSON API** that mirrors Resend's `/emails` shape - drop-in for existing SDKs.
-- ✅ **HTML form mode** at `/forms` - multipart, file attachments, redirect on success. Works without JavaScript.
 - ✅ **Browser-public-key safe**: per-key origin allowlist, recipient allowlist, sender allowlist, per-IP rate limit, IP blocklist, captcha (Turnstile / hCaptcha / reCaptcha).
 - ✅ **Single small container** (~80 MB, no DB, no queue, no dashboard).
-- ✅ **Prometheus metrics** at `/metrics`.
+- ✅ **Prometheus metrics** at `/metrics`, all endpoints Bearer-auth protected.
 
 ## API
 
-### `POST /emails` - JSON, Resend-compatible
+### `POST /emails`
+
+Drop-in compatible with [Resend's `POST /emails`](https://resend.com/docs/api-reference/emails/send-email).
 
 ```http
 POST /emails HTTP/1.1
 Authorization: Bearer mg_xxxxx
 Content-Type: application/json
-X-Captcha-Token: <optional, if captcha configured>
+X-Captcha-Token: <optional, if captcha configured for this client>
 
 {
   "from": "Antikas <forms@forms.antikas.de>",
   "to": "info@antikas.de",
   "reply_to": "user@example.com",
-  "subject": "Antikas - new business registration",
+  "subject": "new business registration",
   "html": "<p>Firma: Acme GmbH</p>",
   "text": "Firma: Acme GmbH",
   "attachments": [
@@ -31,45 +34,17 @@ X-Captcha-Token: <optional, if captcha configured>
 }
 ```
 
-`from` and `to` may be omitted if `default_from` / `default_to` are configured for the client. Response: `{"id": "msg_..."}` on success.
+Field semantics match Resend's exactly:
+- `from`, `to`, `cc`, `bcc`, `reply_to` accept either a single string or a list.
+- `from` and `to` may be omitted if `default_from` / `default_to` are configured server-side for the client.
+- At least one of `html` / `text` must be present.
+- `attachments[].content` is base64-encoded.
 
-### `POST /forms` - HTML form, multipart, redirect-on-success
-
-For traditional HTML `<form>` tags, no JavaScript required:
-
-```html
-<form action="https://forms.antikas.de/forms"
-      method="POST"
-      enctype="multipart/form-data">
-  <input type="hidden" name="api_key" value="mg_xxxxx">
-  <input type="hidden" name="redirect" value="https://www.antikas.de/danke/">
-  <input type="hidden" name="redirect_error" value="https://www.antikas.de/fehler/">
-  <input type="hidden" name="subject" value="Gewerbeanmeldung">
-
-  <input name="firma" placeholder="Firma" required>
-  <input name="email" type="email" placeholder="Email" required>
-  <input name="gewerbenachweis" type="file" accept=".pdf,.jpg" required>
-  <textarea name="notiz"></textarea>
-
-  <!-- honeypot: hidden via CSS, bots fill it -->
-  <input name="botcheck" style="display:none" tabindex="-1" autocomplete="off">
-
-  <button type="submit">Senden</button>
-</form>
-```
-
-Behavior:
-- All non-metadata fields become rows in a default HTML+text body. Files become attachments.
-- On success, 303 redirect to `redirect`. On error, 303 to `redirect_error` (if set), else JSON error.
-- `subject` is appended to the client's `subject_prefix`.
-- `email` field is auto-used as `Reply-To` if no explicit `reply_to` is set.
-- `botcheck` is the honeypot - non-empty value = silent fake-success, no SMTP call.
-
-Authentication: either `Authorization: Bearer <key>` header or hidden `api_key` field.
+Response on success: `{"id": "msg_..."}` (HTTP 200).
 
 ### `GET /health`
 
-`{"status":"ok","version":"0.2.0"}`. **Requires Bearer auth** so the version isn't leaked publicly.
+`{"status":"ok","version":"0.3.0"}`. **Requires Bearer auth** so the version isn't leaked publicly.
 
 The bundled Docker `HEALTHCHECK` reads `MAILGATE_CLIENT_API_KEY` from env to authenticate from inside the container - works out of the box for env-based single-tenant deploys.
 
@@ -77,8 +52,8 @@ The bundled Docker `HEALTHCHECK` reads `MAILGATE_CLIENT_API_KEY` from env to aut
 
 Prometheus exposition format. **Requires Bearer auth.** Configure your scraper with `bearer_token` (or `bearer_token_file` in Prometheus). Counters:
 
-- `mailgate_emails_sent_total{client,endpoint}`
-- `mailgate_emails_failed_total{client,endpoint,reason}`
+- `mailgate_emails_sent_total{client}`
+- `mailgate_emails_failed_total{client,reason}`
 - `mailgate_requests_blocked_total{reason}`
 - `mailgate_send_duration_seconds{client}` (histogram)
 
@@ -209,21 +184,30 @@ docker compose up -d
 
 The CLI runs uvicorn with `--proxy-headers --forwarded-allow-ips '*'` so the real client IP is honored through Coolify's Traefik proxy (matters for `rate_limit_per_minute_per_ip` and `ip_blocklist`).
 
-## Frontend examples
+## Frontend example
 
-### JS-driven (JSON API)
+The caller assembles the email object and POSTs JSON. MailGate just forwards.
 
 ```javascript
 async function submit(form) {
-  const fileField = form.querySelector('input[type=file]');
-  const file = fileField?.files[0];
-  let attachments;
-  if (file) {
-    const buf = await file.arrayBuffer();
-    const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
-    attachments = [{ filename: file.name, content: b64, content_type: file.type }];
-  }
   const data = new FormData(form);
+
+  // Build attachments list (base64-encode any uploaded files)
+  const attachments = [];
+  for (const [key, val] of data.entries()) {
+    if (val instanceof File && val.size > 0) {
+      const buf = await val.arrayBuffer();
+      const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+      attachments.push({ filename: val.name, content: b64, content_type: val.type });
+      data.delete(key);
+    }
+  }
+
+  // Build email body from the remaining text fields - your app decides the format
+  const fields = Array.from(data.entries());
+  const html = `<table>${fields.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('')}</table>`;
+  const text = fields.map(([k, v]) => `${k}: ${v}`).join('\n');
+
   const res = await fetch('https://forms.antikas.de/emails', {
     method: 'POST',
     headers: {
@@ -232,24 +216,30 @@ async function submit(form) {
     },
     body: JSON.stringify({
       reply_to: data.get('email'),
-      subject: 'neue Gewerbeanmeldung',
-      html: buildHtml(data),
-      attachments,
+      subject: 'neue Anfrage',
+      html,
+      text,
+      attachments: attachments.length ? attachments : undefined,
     }),
   });
+
   if (res.ok) showSuccess();
   else showError(await res.json());
 }
 ```
 
-### Pure HTML (form mode)
-
-See the `POST /forms` section above. No JavaScript needed.
-
 ## Compatibility notes
 
-- The Resend Python/JS SDKs work if you set their base URL to your mailgate deploy. The wire format is identical.
-- Attachments expect base64-encoded `content` in JSON mode, or regular `<input type="file">` in form mode.
+The Resend Python / JS SDKs work if you point their base URL at your mailgate deploy. The wire format is identical.
+
+## Why no `/forms` endpoint?
+
+Earlier versions had a multipart `/forms` endpoint that auto-rendered an HTML body from form fields. It was removed in v0.3 because it conflated two concerns:
+
+- **Forwarder** (MailGate's job): take a structured email and ship it via SMTP.
+- **Form handler** (Web3Forms / Formspree / Basin): receive HTML form submissions and turn them into emails.
+
+Resend, Postmark, Mailgun, SendGrid all do only the first. MailGate now does the same. If you need a form handler, run one in your frontend (10 lines of JS, see example above) or put a tiny purpose-built service in front of MailGate.
 
 ## License
 

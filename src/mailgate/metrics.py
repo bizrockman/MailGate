@@ -9,12 +9,12 @@ from starlette.responses import Response
 emails_sent = Counter(
     "mailgate_emails_sent_total",
     "Number of emails successfully sent.",
-    labelnames=["client", "endpoint"],
+    labelnames=["client"],
 )
 emails_failed = Counter(
     "mailgate_emails_failed_total",
     "Number of email sends that failed (SMTP error, validation, etc).",
-    labelnames=["client", "endpoint", "reason"],
+    labelnames=["client", "reason"],
 )
 requests_blocked = Counter(
     "mailgate_requests_blocked_total",

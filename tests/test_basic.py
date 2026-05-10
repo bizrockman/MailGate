@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import base64
-from io import BytesIO
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
-from mailgate.config import ClientConfig
 from mailgate.main import create_app
 
 
@@ -33,12 +31,18 @@ def app(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
 
 def test_health_requires_auth(app):  # type: ignore[no-untyped-def]
     with TestClient(app) as c:
-        # No auth -> 401
         assert c.get("/health").status_code == 401
-        # With auth -> 200
         r = c.get("/health", headers={"Authorization": "Bearer mg_test_key_1234567890"})
         assert r.status_code == 200
         assert r.json()["status"] == "ok"
+
+
+def test_metrics_requires_auth(app):  # type: ignore[no-untyped-def]
+    with TestClient(app) as c:
+        assert c.get("/metrics").status_code == 401
+        r = c.get("/metrics", headers={"Authorization": "Bearer mg_test_key_1234567890"})
+        assert r.status_code == 200
+        assert "mailgate_emails_sent_total" in r.text
 
 
 def test_docs_endpoints_disabled(app):  # type: ignore[no-untyped-def]
@@ -49,16 +53,21 @@ def test_docs_endpoints_disabled(app):  # type: ignore[no-untyped-def]
         assert c.get("/openapi.json").status_code == 404
 
 
+def test_forms_endpoint_is_gone(app):  # type: ignore[no-untyped-def]
+    """Regression: the multipart /forms endpoint was removed in v0.3.
+
+    MailGate is a forwarder, not a form handler. Callers should build the email
+    object themselves and POST JSON to /emails.
+    """
+    with TestClient(app) as c:
+        assert c.post("/forms").status_code == 404
+
+
 def test_missing_auth(app):  # type: ignore[no-untyped-def]
     with TestClient(app) as c:
         r = c.post(
             "/emails",
-            json={
-                "from": "a@b.de",
-                "to": "x@y.de",
-                "subject": "hi",
-                "text": "test",
-            },
+            json={"from": "a@b.de", "to": "x@y.de", "subject": "hi", "text": "test"},
         )
         assert r.status_code == 401
 
@@ -101,7 +110,13 @@ def test_send_with_attachment(app):  # type: ignore[no-untyped-def]
             }
         ],
     }
-    with patch("mailgate.smtp.aiosmtplib.send", new=AsyncMock(return_value=None)):
+    captured: dict = {}
+
+    async def fake_send(message, **kwargs):  # noqa: ANN001
+        captured["message"] = message
+        return None
+
+    with patch("mailgate.smtp.aiosmtplib.send", new=AsyncMock(side_effect=fake_send)):
         with TestClient(app) as c:
             r = c.post(
                 "/emails",
@@ -111,8 +126,13 @@ def test_send_with_attachment(app):  # type: ignore[no-untyped-def]
                 },
                 json=payload,
             )
-        assert r.status_code == 200, r.text
-        assert r.json()["id"].startswith("msg_")
+    assert r.status_code == 200, r.text
+    assert r.json()["id"].startswith("msg_")
+    msg = captured["message"]
+    attachments = [
+        part for part in msg.iter_attachments() if part.get_filename() == "doc.pdf"
+    ]
+    assert attachments, "PDF attachment missing from outgoing email"
 
 
 def test_validation_error_body_required(app):  # type: ignore[no-untyped-def]
@@ -129,7 +149,7 @@ def test_validation_error_body_required(app):  # type: ignore[no-untyped-def]
 
 
 def test_recipient_not_allowed(app):  # type: ignore[no-untyped-def]
-    """allowed_to_addresses is the most important lockdown - verify it works."""
+    """allowed_to_addresses lockdown."""
     with TestClient(app) as c:
         r = c.post(
             "/emails",
@@ -146,137 +166,6 @@ def test_recipient_not_allowed(app):  # type: ignore[no-untyped-def]
         )
         assert r.status_code == 403
         assert "not allowed" in r.json()["error"]
-
-
-def test_metrics_requires_auth(app):  # type: ignore[no-untyped-def]
-    with TestClient(app) as c:
-        assert c.get("/metrics").status_code == 401
-        r = c.get("/metrics", headers={"Authorization": "Bearer mg_test_key_1234567890"})
-        assert r.status_code == 200
-        assert "mailgate_emails_sent_total" in r.text
-
-
-def test_form_endpoint_with_defaults_and_attachment(app):  # type: ignore[no-untyped-def]
-    """The /forms endpoint: HTML-form-mode with multipart, defaults applied,
-    file attachment, redirect on success."""
-    files = {
-        # Form-style POST with one file and several text fields
-        "api_key": (None, "mg_test_key_1234567890"),
-        "firma": (None, "ACME GmbH"),
-        "email": (None, "max@example.com"),
-        "notiz": (None, "Bitte um Rückruf"),
-        "redirect": (None, "https://example.com/danke/"),
-        "gewerbenachweis": ("nachweis.pdf", BytesIO(b"%PDF-1.4 fake"), "application/pdf"),
-    }
-    captured: dict = {}
-
-    async def fake_send(*args, **kwargs):  # noqa: ANN001
-        captured["args"] = args
-        captured["kwargs"] = kwargs
-        return None
-
-    with patch("mailgate.smtp.aiosmtplib.send", new=AsyncMock(side_effect=fake_send)):
-        with TestClient(app) as c:
-            r = c.post(
-                "/forms",
-                files=files,
-                headers={"Origin": "https://example.com"},
-                follow_redirects=False,
-            )
-
-    assert r.status_code == 303, r.text
-    assert r.headers["location"] == "https://example.com/danke/"
-    # SMTP was called -> defaults filled (default_from, default_to, subject_prefix)
-    assert "kwargs" in captured
-
-
-def test_form_honeypot_silently_succeeds(app):  # type: ignore[no-untyped-def]
-    """Bots fill all fields including honeypot; we fake-success without sending."""
-    with patch("mailgate.smtp.aiosmtplib.send", new=AsyncMock()) as mock_send:
-        with TestClient(app) as c:
-            r = c.post(
-                "/forms",
-                files={
-                    "api_key": (None, "mg_test_key_1234567890"),
-                    "firma": (None, "ACME"),
-                    "botcheck": (None, "yes-i-am-a-bot"),
-                    "redirect": (None, "https://example.com/danke/"),
-                },
-                headers={"Origin": "https://example.com"},
-                follow_redirects=False,
-            )
-        assert r.status_code == 303
-        mock_send.assert_not_called()
-
-
-def test_form_attachment_actually_attached_not_stringified(app):  # type: ignore[no-untyped-def]
-    """Regression: UploadFile values must become real attachments, never get
-    rendered as text in the body. Uses Starlette's UploadFile under the hood."""
-    captured: dict = {}
-
-    async def fake_send(message, **kwargs):  # noqa: ANN001
-        captured["message"] = message
-        return None
-
-    with patch("mailgate.smtp.aiosmtplib.send", new=AsyncMock(side_effect=fake_send)):
-        with TestClient(app) as c:
-            r = c.post(
-                "/forms",
-                files={
-                    "api_key": (None, "mg_test_key_1234567890"),
-                    "firma": (None, "ACME GmbH"),
-                    "gewerbenachweis": (
-                        "doc.pdf",
-                        BytesIO(b"%PDF-1.4 attached"),
-                        "application/pdf",
-                    ),
-                    "redirect": (None, "https://example.com/danke/"),
-                },
-                headers={"Origin": "https://example.com"},
-                follow_redirects=False,
-            )
-    assert r.status_code == 303
-    msg = captured["message"]
-    # The MIME message must have an attachment part
-    attachments = [
-        part for part in msg.iter_attachments() if part.get_filename() == "doc.pdf"
-    ]
-    assert attachments, "PDF attachment missing from outgoing email"
-    # Body must NOT contain the python repr of UploadFile
-    body_text = msg.get_body(("plain",)).get_content() if msg.get_body(("plain",)) else ""
-    assert "UploadFile(" not in body_text
-    assert "gewerbenachweis" not in body_text.lower()
-
-
-def test_form_intro_is_caller_provided_via_underscore_field(app):  # type: ignore[no-untyped-def]
-    """Caller controls the body intro by sending a `_intro` form field.
-    MailGate stays generic - it doesn't bake any application-specific copy."""
-    captured: dict = {}
-
-    async def fake_send(message, **kwargs):  # noqa: ANN001
-        captured["message"] = message
-        return None
-
-    with patch("mailgate.smtp.aiosmtplib.send", new=AsyncMock(side_effect=fake_send)):
-        with TestClient(app) as c:
-            r = c.post(
-                "/forms",
-                files={
-                    "api_key": (None, "mg_test_key_1234567890"),
-                    "_intro": (None, "Neue Anfrage über www.antikas.de"),
-                    "firma": (None, "ACME"),
-                    "redirect": (None, "https://example.com/danke/"),
-                },
-                headers={"Origin": "https://example.com"},
-                follow_redirects=False,
-            )
-    assert r.status_code == 303
-    msg = captured["message"]
-    body_text = msg.get_body(("plain",)).get_content() if msg.get_body(("plain",)) else ""
-    # Intro is in the body...
-    assert "Neue Anfrage über www.antikas.de" in body_text
-    # ...but the meta key '_intro' itself is not rendered as a row
-    assert "_intro" not in body_text.lower()
 
 
 def test_subject_prefix_auto_spaces(app):  # type: ignore[no-untyped-def]
@@ -304,3 +193,28 @@ def test_subject_prefix_auto_spaces(app):  # type: ignore[no-untyped-def]
             )
     assert r.status_code == 200, r.text
     assert captured["subject"] == "[Test] Hello"
+
+
+def test_defaults_applied_when_caller_omits(app):  # type: ignore[no-untyped-def]
+    """default_from / default_to / subject_prefix all kick in for a minimal payload."""
+    captured: dict = {}
+
+    async def fake_send(message, **kwargs):  # noqa: ANN001
+        captured["message"] = message
+        return None
+
+    with patch("mailgate.smtp.aiosmtplib.send", new=AsyncMock(side_effect=fake_send)):
+        with TestClient(app) as c:
+            r = c.post(
+                "/emails",
+                headers={
+                    "Authorization": "Bearer mg_test_key_1234567890",
+                    "Origin": "https://example.com",
+                },
+                json={"subject": "Minimal", "text": "ping"},
+            )
+    assert r.status_code == 200, r.text
+    msg = captured["message"]
+    assert "Test" in msg["From"] and "a@b.de" in msg["From"]
+    assert "allowed@y.de" in msg["To"]
+    assert msg["Subject"] == "[Test] Minimal"

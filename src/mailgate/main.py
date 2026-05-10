@@ -1,8 +1,15 @@
-"""FastAPI application entrypoint."""
+"""FastAPI application entrypoint.
+
+MailGate is a thin SMTP forwarder. It exposes a single Resend-compatible
+``POST /emails`` endpoint that takes a fully-formed email object (from, to,
+subject, html/text, attachments) and ships it through configured SMTP.
+
+Body construction, form parsing, and any application-specific concerns belong
+to the caller. MailGate's job is auth + scope enforcement + SMTP.
+"""
 
 from __future__ import annotations
 
-import base64
 import logging
 import sys
 import time
@@ -12,15 +19,10 @@ from typing import Any, Optional
 import aiosmtplib
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import JSONResponse, RedirectResponse
-# Starlette's UploadFile is what python-multipart actually instantiates. FastAPI's
-# UploadFile is a subclass; isinstance(value, fastapi.UploadFile) is False for the
-# raw form items. Import the runtime type directly.
-from starlette.datastructures import UploadFile
+from fastapi.responses import JSONResponse
 
 from . import __version__
 from .auth import (
-    CAPTCHA_FIELD_NAMES,
     RateLimiter,
     authenticate,
     check_from_address,
@@ -31,7 +33,6 @@ from .auth import (
     verify_captcha,
 )
 from . import metrics
-from .body_builder import render_html, render_text
 from .config import ClientConfig, Settings, load_clients
 from .models import EmailRequest, EmailResponse, ErrorResponse
 from .smtp import send as smtp_send
@@ -64,7 +65,7 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
 
 
 # ---------------------------------------------------------------------------
-# shared validation pipeline (used by /emails and /forms)
+# shared validation pipeline
 # ---------------------------------------------------------------------------
 
 async def _validate(
@@ -72,12 +73,8 @@ async def _validate(
     client: ClientConfig,
     *,
     captcha_token: str,
-    skip_captcha: bool = False,
 ) -> str:
-    """Run all pre-SMTP checks. Returns the client IP, raises HTTPException on fail.
-
-    Honeypot is checked at the route level (different field semantics per endpoint).
-    """
+    """Run all pre-SMTP checks. Returns the client IP, raises HTTPException on fail."""
     ip = get_client_ip(request)
     try:
         check_ip_blocklist(client, ip)
@@ -90,7 +87,7 @@ async def _validate(
         metrics.requests_blocked.labels(reason="origin_denied").inc()
         raise e
 
-    if client.captcha_provider and client.captcha_secret and not skip_captcha:
+    if client.captcha_provider and client.captcha_secret:
         ok = await verify_captcha(
             client.captcha_provider, client.captcha_secret, captcha_token, ip
         )
@@ -142,8 +139,6 @@ async def _do_send(
     request: Request,
     client: ClientConfig,
     body: EmailRequest,
-    *,
-    endpoint: str,
 ) -> str:
     """Send via SMTP, record metrics + rate-limit success. Returns short id."""
     settings: Settings = request.app.state.settings
@@ -152,19 +147,19 @@ async def _do_send(
         short_id = await smtp_send(settings, body)
     except aiosmtplib.SMTPException as e:  # type: ignore[attr-defined]
         log.exception("smtp error: %s", e)
-        metrics.emails_failed.labels(client=client.name, endpoint=endpoint, reason="smtp").inc()
+        metrics.emails_failed.labels(client=client.name, reason="smtp").inc()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=f"smtp error: {e}"
         ) from e
     except OSError as e:
         log.exception("network error: %s", e)
-        metrics.emails_failed.labels(client=client.name, endpoint=endpoint, reason="network").inc()
+        metrics.emails_failed.labels(client=client.name, reason="network").inc()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"smtp connection failed: {e}",
         ) from e
 
-    metrics.emails_sent.labels(client=client.name, endpoint=endpoint).inc()
+    metrics.emails_sent.labels(client=client.name).inc()
     metrics.send_duration.labels(client=client.name).observe(time.perf_counter() - started)
     ip = get_client_ip(request)
     request.app.state.rate_limiter.record(client, ip)
@@ -175,36 +170,15 @@ async def _do_send(
 # Routes
 # ---------------------------------------------------------------------------
 
-# Form fields that are metadata, never copied into the email body.
-# Any additional caller-defined field with a leading underscore is also treated
-# as metadata (caller convention: `_intro`, `_footer`, `_anything`).
-_FORM_META_FIELDS = {
-    "api_key",
-    "redirect",
-    "redirect_error",
-    "subject",
-    "from",
-    "to",
-    "cc",
-    "bcc",
-    "reply_to",
-    "botcheck",
-    *CAPTCHA_FIELD_NAMES.values(),
-}
-
-
-def _is_meta_field(name: str) -> bool:
-    return name in _FORM_META_FIELDS or name.startswith("_")
-
 
 def create_app() -> FastAPI:
     app = FastAPI(
         title="mailgate",
         version=__version__,
-        description="Lightweight self-hostable mail relay with a Resend-compatible HTTP API.",
+        description="Self-hostable SMTP forwarder with a Resend-compatible HTTP API.",
         lifespan=lifespan,
-        # Disable auto-generated docs/schema endpoints. They leak the full API surface
-        # to anyone who can hit the deployment. Read README.md instead.
+        # Disable auto-generated docs/schema endpoints. They leak the full API
+        # surface to anyone who can hit the deployment. Read README.md instead.
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
@@ -261,8 +235,6 @@ def create_app() -> FastAPI:
     ):
         return metrics.metrics_response()
 
-    # -------------------------- /emails (JSON, Resend-compatible) --------------------------
-
     @app.post(
         "/emails",
         response_model=EmailResponse,
@@ -293,115 +265,8 @@ def create_app() -> FastAPI:
         )
         await _validate(request, client, captcha_token=captcha_token)
 
-        short_id = await _do_send(request, client, body, endpoint="emails")
+        short_id = await _do_send(request, client, body)
         return EmailResponse(id=f"msg_{short_id}")
-
-    # -------------------------- /forms (HTML form, multipart) ------------------------------
-
-    @app.post("/forms")
-    async def submit_form(request: Request):  # type: ignore[no-untyped-def]
-        clients: dict[str, ClientConfig] = request.app.state.clients
-        form = await request.form()
-
-        # Auth: Bearer header OR hidden api_key field
-        auth = request.headers.get("authorization")
-        if auth and auth.lower().startswith("bearer "):
-            token = auth.split(None, 1)[1].strip()
-        else:
-            token = str(form.get("api_key") or "").strip()
-        if not token or token not in clients:
-            metrics.requests_blocked.labels(reason="auth_failed").inc()
-            raise HTTPException(401, "missing or invalid api_key")
-        client = clients[token]
-
-        # Honeypot (instant fake-success - bots get a 200 redirect, never see SMTP)
-        if str(form.get("botcheck") or "").strip():
-            log.info("honeypot tripped client=%s", client.name)
-            metrics.requests_blocked.labels(reason="honeypot").inc()
-            ok_redirect = str(form.get("redirect") or "")
-            if ok_redirect:
-                return RedirectResponse(ok_redirect, status_code=303)
-            return JSONResponse({"id": "msg_honeypot"}, 200)
-
-        # Captcha token: from provider-specific field name
-        captcha_token = ""
-        if client.captcha_provider:
-            field = CAPTCHA_FIELD_NAMES.get(client.captcha_provider, "")
-            captcha_token = str(form.get(field) or "")
-        await _validate(request, client, captcha_token=captcha_token)
-
-        # Build EmailRequest from form fields
-        from_addr = str(form.get("from") or "").strip() or client.default_from
-        if not from_addr:
-            raise HTTPException(422, "from is required (no default_from configured)")
-
-        to_field = form.getlist("to")
-        if not to_field:
-            to_field = list(client.default_to or [])
-        if not to_field:
-            raise HTTPException(422, "to is required (no default_to configured)")
-
-        cc_field = form.getlist("cc")
-        bcc_field = form.getlist("bcc")
-        reply_to = str(form.get("reply_to") or form.get("email") or "").strip() or None
-        subject_user = str(form.get("subject") or "").strip()
-        subject = _join_prefix(client.subject_prefix, subject_user or "Form submission")
-
-        # Body construction: every non-meta, non-file field becomes a row
-        body_fields: list[tuple[str, str]] = []
-        attachments_data: list[dict[str, str]] = []
-
-        for key, value in form.multi_items():
-            if _is_meta_field(key):
-                continue
-            if isinstance(value, UploadFile):
-                content = await value.read()
-                attachments_data.append(
-                    {
-                        "filename": value.filename or key,
-                        "content": base64.b64encode(content).decode("ascii"),
-                        "content_type": value.content_type or "application/octet-stream",
-                    }
-                )
-                continue
-            body_fields.append((key, str(value)))
-
-        # Caller can pass `_intro` as a form field for an intro line above the
-        # auto-rendered field table. MailGate has no opinion about its content -
-        # the application owns that copy. Empty / missing = no intro line.
-        intro = str(form.get("_intro") or "").strip() or None
-        html = render_html(body_fields, intro=intro)
-        text = render_text(body_fields, intro=intro)
-
-        email_req = EmailRequest.model_validate({
-            "from": from_addr,
-            "to": to_field,
-            "cc": cc_field or None,
-            "bcc": bcc_field or None,
-            "reply_to": reply_to,
-            "subject": subject,
-            "html": html,
-            "text": text,
-            "attachments": attachments_data or None,
-        })
-
-        check_from_address(client, email_req.from_)
-        check_to_addresses(
-            client, email_req.to_list + email_req.cc_list + email_req.bcc_list
-        )
-
-        try:
-            short_id = await _do_send(request, client, email_req, endpoint="forms")
-        except HTTPException as e:
-            err_redirect = str(form.get("redirect_error") or "")
-            if err_redirect:
-                return RedirectResponse(err_redirect, status_code=303)
-            raise e
-
-        ok_redirect = str(form.get("redirect") or "")
-        if ok_redirect:
-            return RedirectResponse(ok_redirect, status_code=303)
-        return JSONResponse({"id": f"msg_{short_id}"}, 200)
 
     return app
 
@@ -416,7 +281,7 @@ app = create_app()
 
 
 def run() -> None:
-    """CLI entrypoint: `mailgate` -> uvicorn on env-configured host:port.
+    """CLI entrypoint: ``mailgate`` -> uvicorn on env-configured host:port.
 
     Honors X-Forwarded-For when run behind a reverse proxy (Coolify/Traefik/nginx).
     """
