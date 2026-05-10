@@ -63,6 +63,24 @@ def test_forms_endpoint_is_gone(app):  # type: ignore[no-untyped-def]
         assert c.post("/forms").status_code == 404
 
 
+def test_options_preflight_has_empty_body(app):  # type: ignore[no-untyped-def]
+    """Regression: 204 No Content responses must have an empty body. A previous
+    version returned JSONResponse(content=None) which serializes b'null' and
+    tripped uvicorn's Content-Length sanity check (RuntimeError in logs)."""
+    with TestClient(app) as c:
+        r = c.options(
+            "/emails",
+            headers={
+                "Origin": "https://example.com",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+        assert r.status_code == 204
+        assert r.content == b""
+        assert r.headers["access-control-allow-origin"] == "https://example.com"
+        assert "POST" in r.headers["access-control-allow-methods"]
+
+
 def test_missing_auth(app):  # type: ignore[no-untyped-def]
     with TestClient(app) as c:
         r = c.post(

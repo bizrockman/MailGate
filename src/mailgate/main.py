@@ -19,7 +19,7 @@ from typing import Any, Optional
 import aiosmtplib
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from . import __version__
 from .auth import (
@@ -187,14 +187,17 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def _cors(request: Request, call_next):  # type: ignore[no-untyped-def]
         if request.method == "OPTIONS":
-            return JSONResponse(
+            # 204 No Content MUST have an empty body. Using JSONResponse with
+            # content=None serializes b'null' (4 bytes) and trips uvicorn's
+            # Content-Length sanity check. Use plain Response to send no body.
+            return Response(
                 status_code=204,
-                content=None,
                 headers={
                     "Access-Control-Allow-Origin": request.headers.get("origin", "*"),
-                    "Access-Control-Allow-Methods": "POST, OPTIONS",
+                    "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
                     "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Captcha-Token",
                     "Access-Control-Max-Age": "600",
+                    "Vary": "Origin",
                 },
             )
         response = await call_next(request)
