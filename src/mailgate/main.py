@@ -11,8 +11,12 @@ from typing import Any, Optional
 
 import aiosmtplib
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile, status
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
+# Starlette's UploadFile is what python-multipart actually instantiates. FastAPI's
+# UploadFile is a subclass; isinstance(value, fastapi.UploadFile) is False for the
+# raw form items. Import the runtime type directly.
+from starlette.datastructures import UploadFile
 
 from . import __version__
 from .auth import (
@@ -106,6 +110,18 @@ async def _validate(
     return ip
 
 
+def _join_prefix(prefix: Optional[str], subject: str) -> str:
+    """Prepend a prefix to a subject. Auto-inserts a single space separator unless
+    the prefix already ends with whitespace or the subject already begins with it.
+    Idempotent: if subject already starts with the prefix, returned unchanged."""
+    if not prefix:
+        return subject
+    if subject.startswith(prefix):
+        return subject
+    sep = "" if prefix.endswith((" ", "\t")) or subject.startswith((" ", "\t")) else " "
+    return f"{prefix}{sep}{subject}"
+
+
 def _apply_client_defaults(client: ClientConfig, body: EmailRequest) -> EmailRequest:
     """Apply per-client default_from / default_to / subject_prefix when missing."""
     update: dict[str, Any] = {}
@@ -114,9 +130,9 @@ def _apply_client_defaults(client: ClientConfig, body: EmailRequest) -> EmailReq
     if not body.to and client.default_to:
         update["to"] = list(client.default_to)
     if client.subject_prefix:
-        prefix = client.subject_prefix
-        if not body.subject.startswith(prefix):
-            update["subject"] = prefix + body.subject
+        new_subject = _join_prefix(client.subject_prefix, body.subject)
+        if new_subject != body.subject:
+            update["subject"] = new_subject
     if not update:
         return body
     return body.model_copy(update=update)
@@ -323,9 +339,7 @@ def create_app() -> FastAPI:
         bcc_field = form.getlist("bcc")
         reply_to = str(form.get("reply_to") or form.get("email") or "").strip() or None
         subject_user = str(form.get("subject") or "").strip()
-        subject = subject_user or "Form submission"
-        if client.subject_prefix and not subject.startswith(client.subject_prefix):
-            subject = client.subject_prefix + subject
+        subject = _join_prefix(client.subject_prefix, subject_user or "Form submission")
 
         # Body construction: every non-meta, non-file field becomes a row
         body_fields: list[tuple[str, str]] = []
@@ -346,9 +360,11 @@ def create_app() -> FastAPI:
                 continue
             body_fields.append((key, str(value)))
 
-        intro = f"Neue Anfrage über {client.name} ({client.subject_prefix or 'Formular'})"
-        html = render_html(body_fields, intro=intro)
-        text = render_text(body_fields, intro=intro)
+        # form_intro is optional. If unset, the email body has no intro line and just
+        # shows the field table. The Antikas-style "Neue Anfrage über www.antikas.de"
+        # is configured per-client.
+        html = render_html(body_fields, intro=client.form_intro)
+        text = render_text(body_fields, intro=client.form_intro)
 
         email_req = EmailRequest.model_validate({
             "from": from_addr,

@@ -44,7 +44,13 @@ class ClientConfig(BaseModel):
     default_to: Optional[list[str]] = None
     """Used as 'to' if request omits it. Caller can override (still scope-checked)."""
     subject_prefix: Optional[str] = None
-    """Prepended to every email subject. e.g. '[Antikas Form] '."""
+    """Prepended to every email subject. A separating space is auto-inserted if the
+    prefix doesn't already end with whitespace, so '[Antikas]' and '[Antikas] ' both
+    yield '[Antikas] Subject'."""
+    form_intro: Optional[str] = None
+    """Intro line above the auto-rendered field table in the /forms endpoint body.
+    Defaults to no intro (clean field table only).
+    Example: 'Neue Anfrage über www.antikas.de'."""
 
     # --- Rate limiting ---
     rate_limit_per_minute: int = 10
@@ -112,6 +118,7 @@ class Settings(BaseSettings):
     client_default_from: Optional[str] = None
     client_default_to: str = ""
     client_subject_prefix: Optional[str] = None
+    client_form_intro: Optional[str] = None
     client_rate_limit_per_minute: int = 10
     client_rate_limit_per_minute_per_ip: Optional[int] = None
     client_daily_limit: Optional[int] = None
@@ -134,6 +141,7 @@ def _client_from_env(s: Settings) -> Optional[ClientConfig]:
         default_from=s.client_default_from,
         default_to=_split_csv_or_none(s.client_default_to),
         subject_prefix=s.client_subject_prefix,
+        form_intro=s.client_form_intro,
         rate_limit_per_minute=s.client_rate_limit_per_minute,
         rate_limit_per_minute_per_ip=s.client_rate_limit_per_minute_per_ip,
         daily_limit=s.client_daily_limit,
