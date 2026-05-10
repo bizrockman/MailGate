@@ -176,6 +176,8 @@ async def _do_send(
 # ---------------------------------------------------------------------------
 
 # Form fields that are metadata, never copied into the email body.
+# Any additional caller-defined field with a leading underscore is also treated
+# as metadata (caller convention: `_intro`, `_footer`, `_anything`).
 _FORM_META_FIELDS = {
     "api_key",
     "redirect",
@@ -189,6 +191,10 @@ _FORM_META_FIELDS = {
     "botcheck",
     *CAPTCHA_FIELD_NAMES.values(),
 }
+
+
+def _is_meta_field(name: str) -> bool:
+    return name in _FORM_META_FIELDS or name.startswith("_")
 
 
 def create_app() -> FastAPI:
@@ -346,7 +352,7 @@ def create_app() -> FastAPI:
         attachments_data: list[dict[str, str]] = []
 
         for key, value in form.multi_items():
-            if key in _FORM_META_FIELDS:
+            if _is_meta_field(key):
                 continue
             if isinstance(value, UploadFile):
                 content = await value.read()
@@ -360,11 +366,12 @@ def create_app() -> FastAPI:
                 continue
             body_fields.append((key, str(value)))
 
-        # form_intro is optional. If unset, the email body has no intro line and just
-        # shows the field table. The Antikas-style "Neue Anfrage über www.antikas.de"
-        # is configured per-client.
-        html = render_html(body_fields, intro=client.form_intro)
-        text = render_text(body_fields, intro=client.form_intro)
+        # Caller can pass `_intro` as a form field for an intro line above the
+        # auto-rendered field table. MailGate has no opinion about its content -
+        # the application owns that copy. Empty / missing = no intro line.
+        intro = str(form.get("_intro") or "").strip() or None
+        html = render_html(body_fields, intro=intro)
+        text = render_text(body_fields, intro=intro)
 
         email_req = EmailRequest.model_validate({
             "from": from_addr,

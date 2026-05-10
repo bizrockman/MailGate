@@ -27,7 +27,6 @@ def app(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
     monkeypatch.setenv("MAILGATE_CLIENT_DEFAULT_TO", "allowed@y.de")
     # Note: prefix without trailing space - the server should auto-insert a separator
     monkeypatch.setenv("MAILGATE_CLIENT_SUBJECT_PREFIX", "[Test]")
-    monkeypatch.setenv("MAILGATE_CLIENT_FORM_INTRO", "Neue Anfrage")
     monkeypatch.setenv("MAILGATE_CLIENT_RATE_LIMIT_PER_MINUTE", "20")
     return create_app()
 
@@ -247,6 +246,37 @@ def test_form_attachment_actually_attached_not_stringified(app):  # type: ignore
     body_text = msg.get_body(("plain",)).get_content() if msg.get_body(("plain",)) else ""
     assert "UploadFile(" not in body_text
     assert "gewerbenachweis" not in body_text.lower()
+
+
+def test_form_intro_is_caller_provided_via_underscore_field(app):  # type: ignore[no-untyped-def]
+    """Caller controls the body intro by sending a `_intro` form field.
+    MailGate stays generic - it doesn't bake any application-specific copy."""
+    captured: dict = {}
+
+    async def fake_send(message, **kwargs):  # noqa: ANN001
+        captured["message"] = message
+        return None
+
+    with patch("mailgate.smtp.aiosmtplib.send", new=AsyncMock(side_effect=fake_send)):
+        with TestClient(app) as c:
+            r = c.post(
+                "/forms",
+                files={
+                    "api_key": (None, "mg_test_key_1234567890"),
+                    "_intro": (None, "Neue Anfrage über www.antikas.de"),
+                    "firma": (None, "ACME"),
+                    "redirect": (None, "https://example.com/danke/"),
+                },
+                headers={"Origin": "https://example.com"},
+                follow_redirects=False,
+            )
+    assert r.status_code == 303
+    msg = captured["message"]
+    body_text = msg.get_body(("plain",)).get_content() if msg.get_body(("plain",)) else ""
+    # Intro is in the body...
+    assert "Neue Anfrage über www.antikas.de" in body_text
+    # ...but the meta key '_intro' itself is not rendered as a row
+    assert "_intro" not in body_text.lower()
 
 
 def test_subject_prefix_auto_spaces(app):  # type: ignore[no-untyped-def]
