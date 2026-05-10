@@ -283,7 +283,7 @@ def create_app() -> FastAPI:
             raise HTTPException(401, "missing or invalid api_key")
         client = clients[token]
 
-        # Honeypot (instant fake-success — bots get a 200 redirect, never see SMTP)
+        # Honeypot (instant fake-success - bots get a 200 redirect, never see SMTP)
         if str(form.get("botcheck") or "").strip():
             log.info("honeypot tripped client=%s", client.name)
             metrics.requests_blocked.labels(reason="honeypot").inc()

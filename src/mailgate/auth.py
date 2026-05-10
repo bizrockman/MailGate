@@ -158,7 +158,7 @@ def check_ip_blocklist(client: ClientConfig, ip: str) -> None:
     try:
         addr = ipaddress.ip_address(ip)
     except ValueError:
-        return  # cannot parse — let it through; should be rare
+        return  # cannot parse - let it through; should be rare
     for entry in client.ip_blocklist:
         try:
             if "/" in entry:

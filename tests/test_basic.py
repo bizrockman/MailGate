@@ -117,7 +117,7 @@ def test_validation_error_body_required(app):  # type: ignore[no-untyped-def]
 
 
 def test_recipient_not_allowed(app):  # type: ignore[no-untyped-def]
-    """allowed_to_addresses is the most important lockdown — verify it works."""
+    """allowed_to_addresses is the most important lockdown - verify it works."""
     with TestClient(app) as c:
         r = c.post(
             "/emails",

@@ -2,15 +2,15 @@
 
 Lightweight self-hostable mail relay with a **Resend-compatible HTTP API** and an **HTML-form-action mode**. Bring your own SMTP, get back a single endpoint that browsers and servers can call without exposing SMTP credentials.
 
-- ✅ **JSON API** that mirrors Resend's `/emails` shape — drop-in for existing SDKs.
-- ✅ **HTML form mode** at `/forms` — multipart, file attachments, redirect on success. Works without JavaScript.
+- ✅ **JSON API** that mirrors Resend's `/emails` shape - drop-in for existing SDKs.
+- ✅ **HTML form mode** at `/forms` - multipart, file attachments, redirect on success. Works without JavaScript.
 - ✅ **Browser-public-key safe**: per-key origin allowlist, recipient allowlist, sender allowlist, per-IP rate limit, IP blocklist, captcha (Turnstile / hCaptcha / reCaptcha).
 - ✅ **Single small container** (~80 MB, no DB, no queue, no dashboard).
 - ✅ **Prometheus metrics** at `/metrics`.
 
 ## API
 
-### `POST /emails` — JSON, Resend-compatible
+### `POST /emails` - JSON, Resend-compatible
 
 ```http
 POST /emails HTTP/1.1
@@ -33,7 +33,7 @@ X-Captcha-Token: <optional, if captcha configured>
 
 `from` and `to` may be omitted if `default_from` / `default_to` are configured for the client. Response: `{"id": "msg_..."}` on success.
 
-### `POST /forms` — HTML form, multipart, redirect-on-success
+### `POST /forms` - HTML form, multipart, redirect-on-success
 
 For traditional HTML `<form>` tags, no JavaScript required:
 
@@ -63,7 +63,7 @@ Behavior:
 - On success, 303 redirect to `redirect`. On error, 303 to `redirect_error` (if set), else JSON error.
 - `subject` is appended to the client's `subject_prefix`.
 - `email` field is auto-used as `Reply-To` if no explicit `reply_to` is set.
-- `botcheck` is the honeypot — non-empty value = silent fake-success, no SMTP call.
+- `botcheck` is the honeypot - non-empty value = silent fake-success, no SMTP call.
 
 Authentication: either `Authorization: Bearer <key>` header or hidden `api_key` field.
 
@@ -92,7 +92,7 @@ Prometheus exposition format. Counters:
 
 ## Configuration
 
-Two modes — pick one (or combine for multi-tenant + default):
+Two modes - pick one (or combine for multi-tenant + default):
 
 ### Mode A: single-client via environment variables *(recommended for single-site deploys)*
 
@@ -100,10 +100,10 @@ Two modes — pick one (or combine for multi-tenant + default):
 
 | Variable | Default | Required | Description |
 |---|---|---|---|
-| `MAILGATE_SMTP_HOST` | — | ✅ | SMTP server hostname |
+| `MAILGATE_SMTP_HOST` | - | ✅ | SMTP server hostname |
 | `MAILGATE_SMTP_PORT` | `587` | | SMTP port |
-| `MAILGATE_SMTP_USER` | — | ✅ | SMTP username |
-| `MAILGATE_SMTP_PASSWORD` | — | ✅ | SMTP password |
+| `MAILGATE_SMTP_USER` | - | ✅ | SMTP username |
+| `MAILGATE_SMTP_PASSWORD` | - | ✅ | SMTP password |
 | `MAILGATE_SMTP_USE_TLS` | `true` | | STARTTLS on port 587 |
 | `MAILGATE_SMTP_TIMEOUT` | `15` | | Per-send timeout (seconds) |
 | `MAILGATE_HOST` | `0.0.0.0` | | Listen address |
@@ -115,7 +115,7 @@ Two modes — pick one (or combine for multi-tenant + default):
 | Variable | Default | Description |
 |---|---|---|
 | `MAILGATE_CLIENT_NAME` | `default` | Logical name (used in metrics + logs) |
-| `MAILGATE_CLIENT_API_KEY` | — *(req.)* | Bearer token. Min 16 chars, must start with `mg_` |
+| `MAILGATE_CLIENT_API_KEY` | - *(req.)* | Bearer token. Min 16 chars, must start with `mg_` |
 | `MAILGATE_CLIENT_ALLOWED_ORIGINS` | `""` (any) | Comma-separated `Origin` allowlist |
 | `MAILGATE_CLIENT_ALLOWED_FROM_ADDRESSES` | `""` (any) | Comma-separated allowed `from:` addresses |
 | `MAILGATE_CLIENT_ALLOWED_TO_ADDRESSES` | `""` (any) | **Strongly recommended.** Comma-separated allowed recipients |
@@ -142,7 +142,7 @@ MailGate accepts that for browser-hosted frontends, the `api_key` is effectively
 - `allowed_from_addresses` (lock to verified sender domain)
 - `rate_limit_per_minute_per_ip` (limit per-IP burst)
 - `daily_limit_per_ip` (cap per-IP daily)
-- `captcha_provider` (Turnstile / hCaptcha / reCaptcha — bot resistance)
+- `captcha_provider` (Turnstile / hCaptcha / reCaptcha - bot resistance)
 
 Worst case after a key leak: someone spams *your own inbox*, throttled by per-IP limits and gated by captcha. No worse than receiving spam through public SMTP, just rate-controlled.
 
@@ -178,7 +178,7 @@ docker compose up -d
 
 1. New Application → Type: **Dockerfile** → connect this Git repo.
 2. Exposed port: `8080`.
-3. Custom domain (e.g. `forms.antikas.de`) — Coolify auto-provisions Let's Encrypt.
+3. Custom domain (e.g. `forms.antikas.de`) - Coolify auto-provisions Let's Encrypt.
 4. Healthcheck path: `/health`.
 5. Paste env vars (replace placeholders):
 
