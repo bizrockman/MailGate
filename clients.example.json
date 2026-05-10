@@ -1,0 +1,23 @@
+[
+  {
+    "name": "antikas",
+    "api_key": "mg_REPLACE_WITH_RANDOM_TOKEN",
+    "allowed_origins": [
+      "https://www.antikas.de",
+      "https://antikas.de",
+      "http://localhost:4321"
+    ],
+    "allowed_from_addresses": [
+      "forms@forms.antikas.de"
+    ],
+    "allowed_to_addresses": [
+      "info@antikas.de"
+    ],
+    "rate_limit_per_minute": 10,
+    "rate_limit_per_minute_per_ip": 2,
+    "daily_limit": 200,
+    "daily_limit_per_ip": 5,
+    "ip_blocklist": [],
+    "turnstile_secret": null
+  }
+]
