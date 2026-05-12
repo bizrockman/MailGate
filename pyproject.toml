@@ -1,6 +1,6 @@
 [project]
 name = "mailgate"
-version = "0.3.0"
+version = "0.4.0"
 description = "Self-hostable SMTP forwarder with a Resend-compatible HTTP API"
 readme = "README.md"
 requires-python = ">=3.11"

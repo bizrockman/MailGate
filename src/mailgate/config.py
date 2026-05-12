@@ -37,6 +37,12 @@ class ClientConfig(BaseModel):
     allowed_from_addresses: Optional[list[str]] = None
     allowed_to_addresses: Optional[list[str]] = None
     ip_blocklist: list[str] = Field(default_factory=list)
+    """IPs / CIDRs that are hard-rejected regardless of other rules."""
+    ip_allowlist: list[str] = Field(default_factory=list)
+    """When non-empty, ONLY these IPs / CIDRs may use this api_key.
+    Empty list = no IP restriction (default). Use this for server-to-server
+    callers where the api_key would otherwise be a pure secret.
+    Evaluated after the blocklist."""
 
     # --- Defaults applied when caller omits these fields ---
     default_from: Optional[str] = None
@@ -119,6 +125,7 @@ class Settings(BaseSettings):
     client_daily_limit: Optional[int] = None
     client_daily_limit_per_ip: Optional[int] = None
     client_ip_blocklist: str = ""
+    client_ip_allowlist: str = ""
     client_captcha_provider: Optional[CaptchaProvider] = None
     client_captcha_secret: Optional[str] = None
     client_turnstile_secret: Optional[str] = None  # legacy alias
@@ -141,6 +148,7 @@ def _client_from_env(s: Settings) -> Optional[ClientConfig]:
         daily_limit=s.client_daily_limit,
         daily_limit_per_ip=s.client_daily_limit_per_ip,
         ip_blocklist=_split_csv(s.client_ip_blocklist),
+        ip_allowlist=_split_csv(s.client_ip_allowlist),
         captcha_provider=s.client_captcha_provider,
         captcha_secret=s.client_captcha_secret,
         turnstile_secret=s.client_turnstile_secret,

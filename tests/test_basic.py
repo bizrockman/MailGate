@@ -186,6 +186,58 @@ def test_recipient_not_allowed(app):  # type: ignore[no-untyped-def]
         assert "not allowed" in r.json()["error"]
 
 
+def test_ip_allowlist_rejects_outsiders(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
+    """A client with ip_allowlist set rejects all other IPs - the server-side
+    'API-key + IP lock' pattern (different from the browser scope-lockdown)."""
+    monkeypatch.setenv("MAILGATE_SMTP_HOST", "smtp.example.test")
+    monkeypatch.setenv("MAILGATE_SMTP_USER", "u")
+    monkeypatch.setenv("MAILGATE_SMTP_PASSWORD", "p")
+    monkeypatch.setenv("MAILGATE_CLIENT_API_KEY", "mg_locked_key_1234567890")
+    monkeypatch.setenv("MAILGATE_CLIENT_ALLOWED_TO_ADDRESSES", "allowed@y.de")
+    monkeypatch.setenv("MAILGATE_CLIENT_DEFAULT_FROM", "Test <a@b.de>")
+    monkeypatch.setenv("MAILGATE_CLIENT_DEFAULT_TO", "allowed@y.de")
+    # Allowlist a CIDR that DOES NOT contain 127.0.0.1 (TestClient's IP)
+    monkeypatch.setenv("MAILGATE_CLIENT_IP_ALLOWLIST", "10.0.0.0/8,203.0.113.42")
+    app = create_app()
+    with TestClient(app) as c:
+        r = c.post(
+            "/emails",
+            headers={"Authorization": "Bearer mg_locked_key_1234567890"},
+            json={"subject": "blocked", "text": "..."},
+        )
+        assert r.status_code == 403
+        assert "allowlist" in r.json()["error"]
+
+
+def test_ip_allowlist_accepts_matching_ip(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
+    """When the caller's IP is in the allowlist (or CIDR), request proceeds.
+
+    Starlette's TestClient sets request.client.host to the literal string
+    'testclient' (not a real IP). We patch get_client_ip so the test exercises
+    a realistic value.
+    """
+    monkeypatch.setenv("MAILGATE_SMTP_HOST", "smtp.example.test")
+    monkeypatch.setenv("MAILGATE_SMTP_USER", "u")
+    monkeypatch.setenv("MAILGATE_SMTP_PASSWORD", "p")
+    monkeypatch.setenv("MAILGATE_CLIENT_API_KEY", "mg_locked_key_1234567890")
+    monkeypatch.setenv("MAILGATE_CLIENT_ALLOWED_TO_ADDRESSES", "allowed@y.de")
+    monkeypatch.setenv("MAILGATE_CLIENT_DEFAULT_FROM", "Test <a@b.de>")
+    monkeypatch.setenv("MAILGATE_CLIENT_DEFAULT_TO", "allowed@y.de")
+    monkeypatch.setenv("MAILGATE_CLIENT_IP_ALLOWLIST", "203.0.113.0/24")
+    app = create_app()
+    with (
+        patch("mailgate.main.get_client_ip", return_value="203.0.113.42"),
+        patch("mailgate.smtp.aiosmtplib.send", new=AsyncMock(return_value=None)),
+    ):
+        with TestClient(app) as c:
+            r = c.post(
+                "/emails",
+                headers={"Authorization": "Bearer mg_locked_key_1234567890"},
+                json={"subject": "ok", "text": "..."},
+            )
+    assert r.status_code == 200, r.text
+
+
 def test_subject_prefix_auto_spaces(app):  # type: ignore[no-untyped-def]
     """Regression: prefix '[Test]' + subject 'Hello' -> '[Test] Hello' (auto-space)."""
     captured: dict = {}

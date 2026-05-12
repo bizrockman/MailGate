@@ -151,24 +151,45 @@ def check_to_addresses(client: ClientConfig, recipients: list[str]) -> None:
             )
 
 
-def check_ip_blocklist(client: ClientConfig, ip: str) -> None:
-    """Reject hard-blocked IPs / CIDR ranges."""
-    if not client.ip_blocklist:
-        return
+def _ip_matches_any(ip: str, entries: list[str]) -> bool:
+    """True iff ip equals one of the entries (or is contained in one of its CIDR ranges)."""
     try:
         addr = ipaddress.ip_address(ip)
     except ValueError:
-        return  # cannot parse - let it through; should be rare
-    for entry in client.ip_blocklist:
+        return False
+    for entry in entries:
         try:
             if "/" in entry:
                 if addr in ipaddress.ip_network(entry, strict=False):
-                    raise HTTPException(status_code=403, detail="ip is blocked")
+                    return True
             else:
                 if addr == ipaddress.ip_address(entry):
-                    raise HTTPException(status_code=403, detail="ip is blocked")
+                    return True
         except ValueError:
             continue
+    return False
+
+
+def check_ip_blocklist(client: ClientConfig, ip: str) -> None:
+    """Reject hard-blocked IPs / CIDR ranges. Empty list = no blocklist."""
+    if not client.ip_blocklist:
+        return
+    if _ip_matches_any(ip, client.ip_blocklist):
+        raise HTTPException(status_code=403, detail="ip is blocked")
+
+
+def check_ip_allowlist(client: ClientConfig, ip: str) -> None:
+    """When allowlist is set, only matching IPs/CIDRs pass. Empty list = no allowlist.
+
+    Stricter than the blocklist: an unparseable IP is rejected (rather than passed)
+    because the operator has explicitly opted into strict mode.
+    """
+    if not client.ip_allowlist:
+        return
+    if not _ip_matches_any(ip, client.ip_allowlist):
+        raise HTTPException(
+            status_code=403, detail=f"ip {ip!r} is not in the allowlist"
+        )
 
 
 async def verify_captcha(

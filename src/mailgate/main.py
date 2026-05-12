@@ -26,6 +26,7 @@ from .auth import (
     RateLimiter,
     authenticate,
     check_from_address,
+    check_ip_allowlist,
     check_ip_blocklist,
     check_origin,
     check_to_addresses,
@@ -80,6 +81,11 @@ async def _validate(
         check_ip_blocklist(client, ip)
     except HTTPException as e:
         metrics.requests_blocked.labels(reason="ip_blocked").inc()
+        raise e
+    try:
+        check_ip_allowlist(client, ip)
+    except HTTPException as e:
+        metrics.requests_blocked.labels(reason="ip_not_allowed").inc()
         raise e
     try:
         check_origin(client, request)
